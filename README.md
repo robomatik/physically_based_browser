@@ -31,7 +31,7 @@ pbb.show()
 ```
 
 `pbb.show("/path/to/materials.json")` loads a database from elsewhere, and the
-window's **Open JSON…** button does the same.
+**Load materials** icon button at the top right of the window does the same.
 
 ## Data
 

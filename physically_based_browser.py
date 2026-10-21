@@ -20,6 +20,7 @@ Usage (shelf tool / Python Shell):
 Compatible with Python 3.7+ (Houdini 19.5 ships 3.7 and 3.9 builds).
 """
 
+import base64
 import json
 import os
 
@@ -299,6 +300,34 @@ ROLE_SORT = QtCore.Qt.UserRole + 1
 ROLE_SEGMENTS = QtCore.Qt.UserRole + 2  # [(display_text, copy_text), ...] for copy icons
 ROLE_MATERIAL = QtCore.Qt.UserRole + 3  # the raw material dict
 ROLE_RAW = QtCore.Qt.UserRole + 4       # (kind, value) for the mode column
+
+
+# Icon for the 'Load materials' button: 32x32 PNG, embedded so the module
+# stays a single file.
+LOAD_ICON_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAADsAAAA7AF5KHG9"
+    "AAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAAAtxJREFUWIW9l0lrFEEU"
+    "gL9XPT2aGIPbwQ23eFBRMC6HoKJIJiLBm2NQFA+iIoK/IXgQFLx5EKNBBBcET0EFnbhA9KJI"
+    "UM8xenAhCSYkk8lMd9fzoMaM6ekWTfuO9b6q9/XU6+oaSDC0tTUVx0ilRFP74N4g8M8L5nXu"
+    "6Jw9Hzs2VjsBL3xfVyHl84xIIZ2SU5+uzu3RlD3mBbo9sDrfopI25mX9ndzmSnUmGTa1D+61"
+    "gXfWH8uvABA3PQCQVrlY8Oya749WPsei1aralscTvPJcydpNb/c1Hl17O9cWKZBpH9pv/dI5"
+    "fyy/OAy0ytpKTwEQWMSttnh5MynnBxwGwgUyV4ZO2qB0OhgbmRNV4I/ChO+oj66vOCUojlxQ"
+    "v/TvxSPCWp3xpmV3XahAkoV/hgJY73hYLvY1+ZsQfvVpSgTXMbjGLAsVcGvnRS+m+gpgZpV5"
+    "NbPK1Eex/b5gRHCNMM04uI7gyHhfbAgVMI4bKYDo8HdTGRaNRmvdFAanUrru/YHmFUtv3O2Z"
+    "ODilPZCSiucaABbb+PvYf2nCnyFIwgJGvkalFW3UbLZsj6ZUQISuGGR2j5Mva+QpFTDT7ONY"
+    "xiGTnMCswtNYSG1yAgsywz0g76Ip2fL5UNOMRAQARDUXg6QLgdmamIBF4gRQlfFtmHKBtFvs"
+    "BGwUI0JyAouvdQ4A3THYut6DuxYkIvAjHsbkBWt2JiZgsfF98ONYTkTApItdQCHaQDOJCSy/"
+    "+mRMkGeRkLCot6V5dWJfQyX2PECdIJOYgBgb14gIkpzA0pUN3QL9UYxCQ3K/QGurVeiMwQYN"
+    "8D5yIUwvgLHRHDDAju6hiQMK9yL4L6IcM4icAPpCAAUe+CUuAxi/0IZwn9BjVvuAIyLl/xoL"
+    "Xs0tYfySYoEXCmcEs3PUq1my7Ob9R+O3yObrOnviZFNLsWOPjE4q9byhisCZPnFMtnVVvIpp"
+    "Nut8cEdr3RpTXHipY9J63wBzZvbcU/67OQAAAABJRU5ErkJggg=="
+)
+
+
+def load_materials_icon():
+    pix = QtGui.QPixmap()
+    pix.loadFromData(base64.b64decode(LOAD_ICON_PNG_B64), "PNG")
+    return QtGui.QIcon(pix)
 
 
 SWATCH_SIZE = 14  # px, Name-column colour chip
@@ -669,8 +698,11 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._mode.setToolTip("Value shown in the third column")
 
         self._open_btn = QtWidgets.QToolButton()
-        self._open_btn.setText("Open JSON…")
-        self._open_btn.setToolTip("Load a different materials.json")
+        self._open_btn.setIcon(load_materials_icon())
+        self._open_btn.setIconSize(QtCore.QSize(20, 20))
+        self._open_btn.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self._open_btn.setToolTip("Load materials (choose a materials.json file)")
+        self._open_btn.setAccessibleName("Load materials")
 
         self._model = MaterialModel(parent=self)
         self._proxy = MaterialFilterProxy(self)
