@@ -35,6 +35,8 @@ pbb.show()
 
 ## Data
 
+Palmqvist, A. (2026) Physically Based - The PBR Values Database Available at: https://physicallybased.info/ (Accessed: 22 October 2026).
+
 `materials.json` is the Physically Based database (schema 2.2), released under
 CC0 1.0 Universal. A newer copy can be downloaded from
 <https://api.physicallybased.info/v2/materials>.
