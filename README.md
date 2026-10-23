@@ -33,6 +33,20 @@ Color.js, which physicallybased.info credits for its converter). Converted
 values are shown in *italics*. Complex IOR is never converted, because n and k
 aren't colours. The name swatches are always drawn from sRGB Linear.
 
+## References
+
+Double-click a row (the cursor shows a question mark over the Name column), or
+right-click and choose **References…**, to open a popup with the material's
+description and references. It closes when you click outside it or press Esc.
+Click a title to open it in your browser, use the copy icon to copy its URL, or
+**Copy citations** to copy all references as full citations, one per line.
+
+## Window
+
+Name is the only column that grows and shrinks with the window. Color, IOR and
+Density are sized to the widest values they can show in any IOR mode and color
+space, so they don't move when you switch.
+
 ## Install
 
 Copy `physically_based_browser.py` and `materials.json` into

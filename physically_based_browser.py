@@ -28,6 +28,8 @@ Compatible with Python 3.7+ (Houdini 19.5 ships 3.7 and 3.9 builds).
 """
 
 import base64
+import datetime
+import html
 import json
 import os
 
@@ -358,6 +360,48 @@ def linear_to_srgb8(c):
     return int(round(s * 255.0))
 
 
+def format_accessed(date_text):
+    """'2025-06-26' -> '26 June 2025' (anything else is returned unchanged)."""
+    try:
+        d = datetime.datetime.strptime(date_text, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return date_text
+    return "{} {}".format(d.day, d.strftime("%B %Y"))
+
+
+def format_citation(ref):
+    """One reference as a Harvard-style citation, matching the README's, e.g.
+    'Polyanskiy, M. N. (n.d.) Refractive index database. Available at:
+    https://refractiveindex.info/... (Accessed: 26 June 2025).'"""
+    parts = []
+    lead = ref.get("author") or ""
+    year = ref.get("year") or "n.d."
+    if lead:
+        parts.append("{} ({}) {}.".format(lead, year, ref.get("title", "").rstrip(".")))
+    else:
+        parts.append("{} ({}).".format(ref.get("title", "").rstrip("."), year))
+    source = ref.get("publisher") or ""
+    if ref.get("volume"):
+        source += (", " if source else "") + ref["volume"]
+        if ref.get("issue"):
+            source += "({})".format(ref["issue"])
+    if ref.get("pages"):
+        source += (", " if source else "") + "pp. " + ref["pages"].replace("--", "–")
+    if source:
+        parts.append(source + ".")
+    if ref.get("doi"):
+        parts.append("DOI: {}.".format(ref["doi"]))
+    if ref.get("url"):
+        accessed = " (Accessed: {})".format(format_accessed(ref["accessed"])) if ref.get("accessed") else ""
+        parts.append("Available at: {}{}.".format(ref["url"], accessed))
+    return " ".join(parts)
+
+
+def reference_meta(ref):
+    """Second line under a reference title: 'author · publisher · year'."""
+    return " · ".join(x for x in (ref.get("author"), ref.get("publisher"), ref.get("year")) if x)
+
+
 def density_values(material):
     vals = material.get("density") or []
     out = []
@@ -569,7 +613,11 @@ class MaterialModel(QtCore.QAbstractTableModel):
                     self._swatches[rgb] = swatch_icon(rgb)
                 return self._swatches[rgb]
             if role == QtCore.Qt.ToolTipRole:
-                return mat.get("description") or None
+                lines = [mat.get("description") or ""]
+                refs = mat.get("references") or []
+                if refs:
+                    lines.append("Double-click for references ({})".format(len(refs)))
+                return "\n\n".join(l for l in lines if l) or None
 
         elif col == COL_COLOR:
             rgb, converted = self._color(row)
@@ -674,6 +722,8 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
         super(CopyValuesDelegate, self).__init__(view)
         self._view = view
         self._hover = None  # (row, column, segment) of the icon under the mouse
+        self._cursor = None  # cursor shape currently set on the viewport
+        self.last_double_click = None  # (viewport pos, global pos) of the last double-click
         view.setMouseTracking(True)
         view.viewport().installEventFilter(self)
 
@@ -805,9 +855,23 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
     def _set_hover(self, hover):
         if hover != self._hover:
             self._hover = hover
-            cursor = QtCore.Qt.PointingHandCursor if hover else QtCore.Qt.ArrowCursor
-            self._view.viewport().setCursor(cursor)
             self._view.viewport().update()
+
+    def _set_cursor(self, shape):
+        if shape != self._cursor:
+            self._cursor = shape
+            if shape is None:
+                self._view.viewport().unsetCursor()
+            else:
+                self._view.viewport().setCursor(shape)
+
+    def over_copy_icon(self, pos):
+        """True if viewport position `pos` is on one of this delegate's copy icons."""
+        index = self._view.indexAt(pos)
+        if not index.isValid() or self._view.itemDelegateForColumn(index.column()) is not self:
+            return False
+        seg, _ = self._hit(self._view.visualRect(index), self._view.font(), index, pos)
+        return seg is not None
 
     def eventFilter(self, obj, event):
         """Hover tracking (item views don't forward mouse moves to delegates)."""
@@ -821,8 +885,18 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
                 if seg is not None:
                     hover = (index.row(), index.column(), seg)
             self._set_hover(hover)
+            if hover:
+                self._set_cursor(QtCore.Qt.PointingHandCursor)
+            elif index.isValid() and index.column() == COL_NAME:
+                # hints that the Name cell does something: double-click for references
+                self._set_cursor(QtCore.Qt.WhatsThisCursor)
+            else:
+                self._set_cursor(None)
+        elif etype == QtCore.QEvent.MouseButtonDblClick:
+            self.last_double_click = (event.pos(), event.globalPos())
         elif etype == QtCore.QEvent.Leave:
             self._set_hover(None)
+            self._set_cursor(None)
         return False
 
     def editorEvent(self, event, model, option, index):
@@ -840,10 +914,177 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
 
 
 # --------------------------------------------------------------------------
+# References popup
+# --------------------------------------------------------------------------
+
+# Houdini colour-scheme (.hcs) resource names tried for the link colour, in
+# order. If none exists, the link colour of Houdini's Qt palette is used.
+HOUDINI_LINK_COLOR_NAMES = ("LinkColor", "HyperlinkColor", "TextLinkColor")
+
+
+def houdini_link_color(widget):
+    if hou is not None and hasattr(hou, "qt") and hasattr(hou.qt, "getColor"):
+        for name in HOUDINI_LINK_COLOR_NAMES:
+            try:
+                return hou.qt.getColor(name)
+            except Exception:  # hou.OperationFailed: no such resource colour
+                continue
+    return widget.palette().color(QtGui.QPalette.Link)
+
+
+def _mix(a, b, t):
+    """Colour between a (t=0) and b (t=1)."""
+    return QtGui.QColor(*(int(round(x + (y - x) * t)) for x, y in
+                          zip(a.getRgb()[:3], b.getRgb()[:3])))
+
+
+def copy_icon(widget, size=16):
+    pix = QtGui.QPixmap(size, size)
+    pix.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pix)
+    CopyValuesDelegate._draw_copy_icon(painter, QtCore.QRect(1, 1, size - 2, size - 2),
+                                       widget.palette().color(QtGui.QPalette.Text), False)
+    painter.end()
+    return QtGui.QIcon(pix)
+
+
+class ReferencesPopup(QtWidgets.QFrame):
+    """Floating list of a material's references. A Qt popup: it closes when
+    the user clicks anywhere outside it or presses Esc, like a menu.
+
+    Titles are links (open in the default browser); each reference has a
+    copy-URL button; 'Copy citations' copies all of them as full citations."""
+
+    WIDTH = 460
+    MAX_BODY_HEIGHT = 360  # taller content scrolls
+
+    def __init__(self, material, parent=None):
+        super(ReferencesPopup, self).__init__(parent, QtCore.Qt.Popup)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self.setObjectName("ReferencesPopup")
+
+        refs = material.get("references") or []
+        self._citations = [format_citation(r) for r in refs]
+        link = houdini_link_color(self).name()
+        muted = _mix(self.palette().color(QtGui.QPalette.WindowText),
+                     self.palette().color(QtGui.QPalette.Window), 0.45).name()
+        icon = copy_icon(self)
+
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+
+        # header: name, count, copy citations
+        head = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel('<b>{}</b>&nbsp;&nbsp;<span style="color:{}">{} reference{}</span>'.format(
+            html.escape(material.get("name", "")), muted, len(refs), "" if len(refs) == 1 else "s"))
+        title.setWordWrap(True)  # long names wrap instead of hiding the count
+        head.addWidget(title, 1)
+        copy_all = QtWidgets.QToolButton()
+        copy_all.setText("Copy citations")
+        copy_all.setAutoRaise(True)
+        copy_all.setToolTip("Copy all references as full citations, one per line")
+        copy_all.clicked.connect(lambda: self._copy("\n".join(self._citations),
+                                                    "Copied {} citation{}".format(
+                                                        len(refs), "" if len(refs) == 1 else "s")))
+        head.addWidget(copy_all, 0, QtCore.Qt.AlignTop)
+        lay.addLayout(head)
+
+        # body: description + references (scrolls when long)
+        body = QtWidgets.QWidget()
+        body_lay = QtWidgets.QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 8, 0)  # keep text clear of the scrollbar
+        body_lay.setSpacing(8)
+        if material.get("description"):
+            desc = QtWidgets.QLabel(material["description"])
+            desc.setWordWrap(True)
+            body_lay.addWidget(desc)
+            line = QtWidgets.QFrame()
+            line.setFrameShape(QtWidgets.QFrame.HLine)
+            line.setFrameShadow(QtWidgets.QFrame.Sunken)
+            body_lay.addWidget(line)
+        for ref in refs:
+            row = QtWidgets.QHBoxLayout()
+            row.setSpacing(6)
+            text = '<a href="{url}" style="color:{link}; text-decoration:none;">{title}</a>'.format(
+                url=html.escape(ref.get("url", ""), quote=True), link=link,
+                title=html.escape(ref.get("title") or ref.get("url", "")))
+            meta = reference_meta(ref)
+            if meta:
+                text += '<br><span style="color:{}">{}</span>'.format(muted, html.escape(meta))
+            label = QtWidgets.QLabel(text)
+            label.setWordWrap(True)
+            label.setTextFormat(QtCore.Qt.RichText)
+            label.setOpenExternalLinks(True)
+            label.setToolTip(ref.get("url", ""))
+            pal = label.palette()
+            pal.setColor(QtGui.QPalette.Link, QtGui.QColor(link))
+            label.setPalette(pal)
+            row.addWidget(label, 1)
+            btn = QtWidgets.QToolButton()
+            btn.setAutoRaise(True)
+            btn.setIcon(icon)
+            btn.setToolTip("Copy URL")
+            btn.clicked.connect(lambda _=False, u=ref.get("url", ""): self._copy(u, "Copied  " + u))
+            row.addWidget(btn, 0, QtCore.Qt.AlignTop)
+            body_lay.addLayout(row)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        lay.addWidget(scroll)
+
+        # size: fixed width, height of the content capped at MAX_BODY_HEIGHT
+        inner = self.WIDTH - lay.contentsMargins().left() - lay.contentsMargins().right()
+        height = self._height_for(body, inner)
+        if height > self.MAX_BODY_HEIGHT:
+            sb = self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent)
+            height = self.MAX_BODY_HEIGHT
+            body.setMinimumWidth(inner - sb)
+        scroll.setFixedHeight(height)
+        self.setFixedWidth(self.WIDTH)
+        self.adjustSize()
+
+    @staticmethod
+    def _height_for(widget, width):
+        widget.layout().activate()
+        h = widget.layout().totalHeightForWidth(width)
+        return h if h > 0 else widget.sizeHint().height()
+
+    def _copy(self, text, message):
+        QtWidgets.QApplication.clipboard().setText(text)
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), message, self)
+
+    def popup_at(self, global_pos):
+        """Show with the top-left corner at the cursor, kept fully on screen."""
+        self.adjustSize()
+        size = self.size()
+        screen = None
+        if hasattr(QtGui.QGuiApplication, "screenAt"):
+            screen = QtGui.QGuiApplication.screenAt(global_pos)
+        screen = screen or QtGui.QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        x, y = global_pos.x() + 2, global_pos.y() + 2
+        if x + size.width() > geo.right():
+            x = geo.right() - size.width()
+        if y + size.height() > geo.bottom():
+            y = global_pos.y() - size.height() - 2  # flip above the cursor
+        x = min(max(geo.left(), x), geo.right() - size.width() + 1)
+        y = min(max(geo.top(), y), geo.bottom() - size.height() + 1)
+        self.move(x, y)
+        self.show()
+
+
+# --------------------------------------------------------------------------
 # Window
 # --------------------------------------------------------------------------
 
 class PhysicallyBasedBrowser(QtWidgets.QWidget):
+
+    NAME_COLUMN_WIDTH = 230  # starting width of the stretching Name column
 
     def __init__(self, json_path=None, parent=None):
         super(PhysicallyBasedBrowser, self).__init__(parent)
@@ -906,14 +1147,13 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._view.setItemDelegateForColumn(COL_COLOR, self._copy_delegate)
         self._view.setItemDelegateForColumn(COL_MODE, self._copy_delegate)
 
+        # Name is the only column that follows the window width; the others are
+        # set to the widest they can ever need (see _fit_columns), so they
+        # don't move when the window, IOR mode or colour space changes.
         header = self._view.horizontalHeader()
-        header.setSectionResizeMode(COL_NAME, QtWidgets.QHeaderView.Interactive)
-        header.setSectionResizeMode(COL_COLOR, QtWidgets.QHeaderView.Interactive)
-        header.setSectionResizeMode(COL_MODE, QtWidgets.QHeaderView.Stretch)
-        header.setSectionResizeMode(COL_DENSITY, QtWidgets.QHeaderView.Interactive)
-        header.resizeSection(COL_NAME, 190)
-        header.resizeSection(COL_COLOR, 150)
-        header.resizeSection(COL_DENSITY, 140)
+        header.setSectionResizeMode(COL_NAME, QtWidgets.QHeaderView.Stretch)
+        for col in (COL_COLOR, COL_MODE, COL_DENSITY):
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.Interactive)
 
         self._status = QtWidgets.QLabel()
         self._status.setStyleSheet("color: gray;")
@@ -941,6 +1181,7 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._space.currentIndexChanged.connect(self._on_space_changed)
         self._open_btn.clicked.connect(self._browse_json)
         self._view.customContextMenuRequested.connect(self._context_menu)
+        self._view.doubleClicked.connect(self._on_double_clicked)
 
         shortcut_cls = getattr(QtWidgets, "QShortcut", None) or QtGui.QShortcut  # PySide6 moved it
         copy_sc = shortcut_cls(QtGui.QKeySequence.Copy, self._view)
@@ -948,6 +1189,9 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
 
         if json_path:
             self.load(json_path)
+            # room for the fixed columns plus a comfortable Name column
+            fixed = sum(header.sectionSize(c) for c in (COL_COLOR, COL_MODE, COL_DENSITY))
+            self.resize(max(self.width(), fixed + self.NAME_COLUMN_WIDTH + 40), self.height())
         else:
             self._update_status()
 
@@ -975,10 +1219,38 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         return True
 
     def _fit_columns(self):
-        """Size Color and Density to their widest value or header, so nothing
-        is clipped whatever font size Houdini's UI uses."""
-        for col in (COL_COLOR, COL_DENSITY):
-            self._view.resizeColumnToContents(col)
+        """Fix Color, IOR and Density at the widest width they need in any IOR
+        mode and either colour space (values and header), so nothing is clipped
+        whatever font size Houdini's UI uses, and nothing jumps when switching."""
+        model = self._model
+        header = self._view.horizontalHeader()
+        saved_mode, saved_space = model.mode(), model.color_space()
+
+        opt = QtWidgets.QStyleOptionViewItem()
+        opt.font = self._view.font()
+        opt.fontMetrics = QtGui.QFontMetrics(opt.font)
+        opt.rect = QtCore.QRect(0, 0, 2000, self._view.verticalHeader().defaultSectionSize())
+        sort_arrow = 18  # room for the sort indicator when a column is sorted
+
+        widths = dict.fromkeys((COL_COLOR, COL_MODE, COL_DENSITY), 0)
+        model.blockSignals(True)  # measuring only; the view is restored below
+        try:
+            for _, space in COLOR_SPACES:
+                for mode in MODES:
+                    model.set_color_space(space)
+                    model.set_mode(mode)
+                    for col in widths:
+                        delegate = self._view.itemDelegateForColumn(col) or self._view.itemDelegate()
+                        width = header.sectionSizeHint(col) + sort_arrow
+                        for row in range(model.rowCount()):
+                            width = max(width, delegate.sizeHint(opt, model.index(row, col)).width())
+                        widths[col] = max(widths[col], width)
+        finally:
+            model.set_color_space(saved_space)
+            model.set_mode(saved_mode)
+            model.blockSignals(False)
+        for col, width in widths.items():
+            header.resizeSection(col, width + 8)
 
     def _browse_json(self):
         start = os.path.dirname(self._json_path) if self._json_path else ""
@@ -1001,7 +1273,6 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
     def _on_space_changed(self, *_):
         self._model.set_color_space(self._space.currentData())
         self._proxy.invalidate()  # luminance sort keys change with the space
-        self._fit_columns()       # header text and values change length
         self._update_status()
 
     def _update_status(self):
@@ -1029,11 +1300,29 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
             QtWidgets.QApplication.clipboard().setText(
                 "\n".join(self._row_text(r) for r in rows))
 
+    # -- references ----------------------------------------------------------
+    def _on_double_clicked(self, index):
+        click = self._copy_delegate.last_double_click
+        pos, global_pos = click if click else (
+            self._view.viewport().mapFromGlobal(QtGui.QCursor.pos()), QtGui.QCursor.pos())
+        if self._copy_delegate.over_copy_icon(pos):
+            return  # a double-click on a copy icon only copies
+        self.show_references(index, global_pos)
+
+    def show_references(self, index, global_pos):
+        material = index.data(ROLE_MATERIAL)
+        if material and material.get("references"):
+            ReferencesPopup(material, self).popup_at(global_pos)
+
     def _context_menu(self, pos):
         index = self._view.indexAt(pos)
         if not index.isValid():
             return
         menu = QtWidgets.QMenu(self)
+        refs = (index.data(ROLE_MATERIAL) or {}).get("references") or []
+        act_refs = menu.addAction("References ({})…".format(len(refs)))
+        act_refs.setEnabled(bool(refs))
+        menu.addSeparator()
         segments = index.data(ROLE_SEGMENTS)
         if segments and len(segments) == 1:
             cell = segments[0][1]  # single RGB triplet -> same r,g,b form as the icon
@@ -1041,8 +1330,11 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
             cell = index.data() or ""
         act_cell = menu.addAction("Copy value")
         act_row = menu.addAction("Copy row")
-        chosen = menu.exec_(self._view.viewport().mapToGlobal(pos))
-        if chosen is act_cell:
+        global_pos = self._view.viewport().mapToGlobal(pos)
+        chosen = menu.exec_(global_pos)
+        if chosen is act_refs:
+            self.show_references(index, global_pos)
+        elif chosen is act_cell:
             QtWidgets.QApplication.clipboard().setText(cell)
         elif chosen is act_row:
             QtWidgets.QApplication.clipboard().setText(
