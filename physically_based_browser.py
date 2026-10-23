@@ -929,15 +929,50 @@ def _mix(a, b, t):
                           zip(a.getRgb()[:3], b.getRgb()[:3])))
 
 
-def copy_icon(widget, size=16):
-    """The same copy glyph as next to the RGB triplets, as a QIcon."""
-    pix = QtGui.QPixmap(size, size)
-    pix.fill(QtCore.Qt.transparent)
-    painter = QtGui.QPainter(pix)
-    CopyValuesDelegate._draw_copy_icon(painter, QtCore.QRect(1, 1, size - 2, size - 2),
-                                       widget.palette().color(QtGui.QPalette.Text), False)
-    painter.end()
-    return QtGui.QIcon(pix)
+class CopyIconButton(QtWidgets.QWidget):
+    """Flat copy icon, drawn exactly like the ones next to the RGB triplets
+    (same glyph and hover highlight). A plain painted widget rather than a
+    QToolButton, so Houdini's stylesheet can't give it a raised button look."""
+
+    clicked = QtCore.Signal()
+    ICON = CopyValuesDelegate.ICON
+
+    def __init__(self, parent=None):
+        super(CopyIconButton, self).__init__(parent)
+        self._hovered = False
+        self._pressed = False
+        self.setFixedSize(self.ICON + 6, self.ICON + 6)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        rect = QtCore.QRect(0, 0, self.ICON, self.ICON)
+        rect.moveCenter(self.rect().center())
+        CopyValuesDelegate._draw_copy_icon(painter, rect, self.palette().color(QtGui.QPalette.WindowText),
+                                           self._hovered)
+        painter.end()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self._pressed = False
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._pressed = True
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if (event.button() == QtCore.Qt.LeftButton and self._pressed
+                and self.rect().contains(event.pos())):
+            self.clicked.emit()
+        self._pressed = False
+        event.accept()
 
 
 class ReferencesPopup(QtWidgets.QFrame):
@@ -983,16 +1018,12 @@ class ReferencesPopup(QtWidgets.QFrame):
         title = QtWidgets.QLabel('<b>{}</b>&nbsp;&nbsp;<span style="color:{}">{} reference{}</span>'.format(
             html.escape(material.get("name", "")), muted, len(refs), "" if len(refs) == 1 else "s"))
         head.addWidget(title)
-        copy_btn = QtWidgets.QToolButton()
-        copy_btn.setAutoRaise(True)
-        copy_btn.setIcon(copy_icon(self))
-        copy_btn.setIconSize(QtCore.QSize(14, 14))
-        copy_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        copy_btn = CopyIconButton()
         copy_btn.setToolTip("Copy citations")
         copy_btn.clicked.connect(lambda: self._copy("\n".join(self._citations),
                                                     "Copied {} citation{}".format(
                                                         len(refs), "" if len(refs) == 1 else "s")))
-        head.addWidget(copy_btn)
+        head.addWidget(copy_btn, 0, QtCore.Qt.AlignVCenter)
         head.addStretch(1)
         lay.addLayout(head)
 
