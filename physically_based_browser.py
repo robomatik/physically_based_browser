@@ -9,8 +9,9 @@ The third column switches between:
 
 Stored in the JSON:  complexIor, ior, specularColor (Gulbrandsen / F82)
 Derived here:        Specular    = F0 / 0.08, with F0 = ((n-1)/(n+1))^2
-                     Reflectance = F0 from ior for dielectrics,
-                                   stored base color for metals
+                     Reflectance = F0 from ior for dielectrics;
+                                   for metals, luminance of the sRGB Linear
+                                   base color, with the per-channel F0 below
 
 Color space (sRGB Linear / ACEScg) applies to Color, Complex IOR, both
 Specular Colors and metal Reflectance. Stored values are always preferred;
@@ -75,7 +76,10 @@ MODE_TOOLTIPS = {
                        "when viewed at an 82° angle.",
     MODE_REFLECTANCE: "Reflectance (F0) specifies the reflectance of a material "
                       "when viewed at a 0° angle.\n"
-                      "(Computed from IOR for dielectrics; base color for metals)",
+                      "(Computed from IOR for dielectrics; for metals, the luminance of "
+                      "the sRGB Linear base color, as on physicallybased.info)\n\n"
+                      "The per-channel F0 are shown below the scalar reflectance in case "
+                      "users want to tint specular.",
 }
 
 # Header tooltips (text as on physicallybased.info)
@@ -114,8 +118,8 @@ COLOR_SPACE_LABELS = dict((key, label) for label, key in COLOR_SPACES)
 
 COLOR_SPACE_TOOLTIP = (
     "Color space for the Color, Complex IOR, Specular Color, Specular Color (F82) "
-    "and metal Reflectance values. IOR, Specular, dielectric Reflectance and "
-    "Density don't change.\n\n"
+    "and per-channel Reflectance F0 values. IOR, Specular, the scalar Reflectance "
+    "and Density don't change.\n\n"
     "Values in italics are converted from sRGB Linear, because the database "
     "doesn't store them in this color space. All other values are stored in the database."
 )
@@ -139,6 +143,7 @@ KIND_NONE = "none"
 KIND_SCALAR = "scalar"
 KIND_RGB = "rgb"
 KIND_COMPLEX = "complex"
+KIND_REFLECTANCE = "reflectance"  # metal: scalar luminance + per-channel F0 triplet
 
 
 def load_materials(path):
@@ -227,6 +232,10 @@ def mode_value(material, mode, space=SPACE_SRGB_LINEAR):
     scalar  -> float                       (colour-space independent)
     rgb     -> (r, g, b)   linear, may exceed 1.0
     complex -> {'n': (r, g, b), 'k': (r, g, b)}
+    reflectance -> {'scalar': float, 'rgb': (r, g, b)}
+               scalar = luminance of the sRGB Linear base colour (never changes
+               with `space`, as on physicallybased.info); rgb = per-channel F0
+               in `space`
     none    -> None        (mode does not apply to this material)
 
     converted is True when the value was matrix-converted from sRGB Linear
@@ -259,9 +268,13 @@ def mode_value(material, mode, space=SPACE_SRGB_LINEAR):
 
     elif mode == MODE_REFLECTANCE:
         if is_metal(material):
+            srgb = base_color(material)
             rgb, converted = base_color_in_space(material, space)
-            if rgb:
-                return KIND_RGB, rgb, converted
+            if srgb and rgb:
+                return KIND_REFLECTANCE, {
+                    "scalar": luminance(srgb, SPACE_SRGB_LINEAR),
+                    "rgb": rgb,
+                }, converted
         elif ior is not None:
             return KIND_SCALAR, f0_from_ior(float(ior)), False
 
@@ -298,9 +311,16 @@ def rgb_copy_text(rgb, converted=False):
     return ",".join(raw_number(c) for c in rgb)
 
 
+def format_scalar(value):
+    """Single values always show exactly three decimals, e.g. '1.500'."""
+    return "{:.3f}".format(float(value))
+
+
 def format_mode_value(kind, value):
     if kind == KIND_SCALAR:
-        return format_number(value, 4)
+        return format_scalar(value)
+    if kind == KIND_REFLECTANCE:
+        return "{}   F0: {}".format(format_scalar(value["scalar"]), format_rgb(value["rgb"]))
     if kind == KIND_RGB:
         return format_rgb(value)
     if kind == KIND_COMPLEX:
@@ -309,7 +329,11 @@ def format_mode_value(kind, value):
 
 
 def mode_segments(kind, value, converted=False):
-    """[(display_text, copy_text), ...] for cells that get copy icons, else None."""
+    """[(display_text, copy_text), ...] for cells drawn line by line, else None.
+    A copy_text of None means that line has no copy icon."""
+    if kind == KIND_REFLECTANCE:
+        return [(format_scalar(value["scalar"]), None),
+                (format_rgb(value["rgb"]), rgb_copy_text(value["rgb"], converted))]
     if kind == KIND_RGB:
         return [(format_rgb(value), rgb_copy_text(value, converted))]
     if kind == KIND_COMPLEX:
@@ -322,6 +346,8 @@ def mode_sort_key(kind, value, space=SPACE_SRGB_LINEAR):
     """Numeric key for sorting; None sorts after everything."""
     if kind == KIND_SCALAR:
         return value
+    if kind == KIND_REFLECTANCE:
+        return value["scalar"]
     if kind == KIND_RGB:
         return luminance(value, space)
     if kind == KIND_COMPLEX:  # sort by resulting F0 brightness
@@ -711,7 +737,7 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
 
     def _hit(self, rect, base_font, index, pos):
         for i, (_, copy_text, _, icon_rect) in enumerate(self._layout(rect, base_font, index)):
-            if icon_rect.adjusted(-3, -3, 3, 3).contains(pos):
+            if copy_text is not None and icon_rect.adjusted(-3, -3, 3, 3).contains(pos):
                 return i, copy_text
         return None, None
 
@@ -731,11 +757,18 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
         selected = bool(opt.state & QtWidgets.QStyle.State_Selected)
         fg = opt.palette.color(QtGui.QPalette.HighlightedText if selected else QtGui.QPalette.Text)
 
+        value_font = self.cell_font(option.font, index)  # italic if converted
         painter.save()
         painter.setClipRect(opt.rect)
-        painter.setFont(self.cell_font(option.font, index))
-        for i, (label, _, text_rect, icon_rect) in enumerate(layout):
-            painter.setPen(fg)
+        painter.setPen(fg)
+        for i, (label, copy_text, text_rect, icon_rect) in enumerate(layout):
+            if copy_text is None:
+                # a summary line without its own copy icon (Reflectance scalar):
+                # never converted, so never italic; centred over the line below
+                painter.setFont(option.font)
+                painter.drawText(text_rect, int(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignHCenter), label)
+                continue
+            painter.setFont(value_font)
             painter.drawText(text_rect, int(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft), label)
             hovered = self._hover == (index.row(), index.column(), i)
             self._draw_copy_icon(painter, icon_rect, fg, hovered)
@@ -953,7 +986,14 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._category.blockSignals(False)
 
         self._on_filter_changed()
+        self._fit_columns()
         return True
+
+    def _fit_columns(self):
+        """Size Color and Density to their widest value or header, so nothing
+        is clipped whatever font size Houdini's UI uses."""
+        for col in (COL_COLOR, COL_DENSITY):
+            self._view.resizeColumnToContents(col)
 
     def _browse_json(self):
         start = os.path.dirname(self._json_path) if self._json_path else ""
@@ -976,6 +1016,7 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
     def _on_space_changed(self, *_):
         self._model.set_color_space(self._space.currentData())
         self._proxy.invalidate()  # luminance sort keys change with the space
+        self._fit_columns()       # header text and values change length
         self._update_status()
 
     def _update_status(self):
