@@ -917,19 +917,10 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
 # References popup
 # --------------------------------------------------------------------------
 
-# Houdini colour-scheme (.hcs) resource names tried for the link colour, in
-# order. If none exists, the link colour of Houdini's Qt palette is used.
-HOUDINI_LINK_COLOR_NAMES = ("LinkColor", "HyperlinkColor", "TextLinkColor")
-
-
-def houdini_link_color(widget):
-    if hou is not None and hasattr(hou, "qt") and hasattr(hou.qt, "getColor"):
-        for name in HOUDINI_LINK_COLOR_NAMES:
-            try:
-                return hou.qt.getColor(name)
-            except Exception:  # hou.OperationFailed: no such resource colour
-                continue
-    return widget.palette().color(QtGui.QPalette.Link)
+def houdini_accent_color(widget):
+    """Houdini's accent colour (the selection highlight of its Qt palette),
+    used for the reference links so they follow the user's UI theme."""
+    return widget.palette().color(QtGui.QPalette.Highlight)
 
 
 def _mix(a, b, t):
@@ -939,6 +930,7 @@ def _mix(a, b, t):
 
 
 def copy_icon(widget, size=16):
+    """The same copy glyph as next to the RGB triplets, as a QIcon."""
     pix = QtGui.QPixmap(size, size)
     pix.fill(QtCore.Qt.transparent)
     painter = QtGui.QPainter(pix)
@@ -952,124 +944,150 @@ class ReferencesPopup(QtWidgets.QFrame):
     """Floating list of a material's references. A Qt popup: it closes when
     the user clicks anywhere outside it or presses Esc, like a menu.
 
-    Titles are links (open in the default browser); each reference has a
-    copy-URL button; 'Copy citations' copies all of them as full citations."""
+    The copy icon next to the material name copies all references as full
+    citations. Titles are links (open in the default browser); right-click a
+    reference to open it or copy its URL. No frame lines; the popup is set
+    apart from the table by a slightly lighter background. Its height is not
+    capped - it only scrolls if it can't fit on the screen at all."""
 
     WIDTH = 460
-    MAX_BODY_HEIGHT = 360  # taller content scrolls
 
     def __init__(self, material, parent=None):
         super(ReferencesPopup, self).__init__(parent, QtCore.Qt.Popup)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.setObjectName("ReferencesPopup")
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setLineWidth(0)
+
+        window = self.palette().color(QtGui.QPalette.Window)
+        text = self.palette().color(QtGui.QPalette.WindowText)
+        background = _mix(window, text, 0.07).name()
+        # a stylesheet, so Houdini's own stylesheet can't paint over it; the
+        # body and (if one is needed) the scroll viewport share the background
+        self.setStyleSheet(
+            "#ReferencesPopup, #ReferencesPopupBody, #ReferencesPopupScroll > QWidget"
+            " { background-color: %s; border: none; }" % background)
 
         refs = material.get("references") or []
         self._citations = [format_citation(r) for r in refs]
-        link = houdini_link_color(self).name()
-        muted = _mix(self.palette().color(QtGui.QPalette.WindowText),
-                     self.palette().color(QtGui.QPalette.Window), 0.45).name()
-        icon = copy_icon(self)
+        link = houdini_accent_color(self).name()
+        muted = _mix(text, window, 0.45).name()
 
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(8)
 
-        # header: name, count, copy citations
+        # header: name, count, copy icon (copies all citations)
         head = QtWidgets.QHBoxLayout()
+        head.setSpacing(4)
         title = QtWidgets.QLabel('<b>{}</b>&nbsp;&nbsp;<span style="color:{}">{} reference{}</span>'.format(
             html.escape(material.get("name", "")), muted, len(refs), "" if len(refs) == 1 else "s"))
-        title.setWordWrap(True)  # long names wrap instead of hiding the count
-        head.addWidget(title, 1)
-        copy_all = QtWidgets.QToolButton()
-        copy_all.setText("Copy citations")
-        copy_all.setAutoRaise(True)
-        copy_all.setToolTip("Copy all references as full citations, one per line")
-        copy_all.clicked.connect(lambda: self._copy("\n".join(self._citations),
+        head.addWidget(title)
+        copy_btn = QtWidgets.QToolButton()
+        copy_btn.setAutoRaise(True)
+        copy_btn.setIcon(copy_icon(self))
+        copy_btn.setIconSize(QtCore.QSize(14, 14))
+        copy_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        copy_btn.setToolTip("Copy citations")
+        copy_btn.clicked.connect(lambda: self._copy("\n".join(self._citations),
                                                     "Copied {} citation{}".format(
                                                         len(refs), "" if len(refs) == 1 else "s")))
-        head.addWidget(copy_all, 0, QtCore.Qt.AlignTop)
+        head.addWidget(copy_btn)
+        head.addStretch(1)
         lay.addLayout(head)
 
-        # body: description + references (scrolls when long)
+        # body: description + references
         body = QtWidgets.QWidget()
+        body.setObjectName("ReferencesPopupBody")
         body_lay = QtWidgets.QVBoxLayout(body)
-        body_lay.setContentsMargins(0, 0, 8, 0)  # keep text clear of the scrollbar
-        body_lay.setSpacing(8)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(10)
         if material.get("description"):
             desc = QtWidgets.QLabel(material["description"])
             desc.setWordWrap(True)
             body_lay.addWidget(desc)
-            line = QtWidgets.QFrame()
-            line.setFrameShape(QtWidgets.QFrame.HLine)
-            line.setFrameShadow(QtWidgets.QFrame.Sunken)
-            body_lay.addWidget(line)
         for ref in refs:
-            row = QtWidgets.QHBoxLayout()
-            row.setSpacing(6)
-            text = '<a href="{url}" style="color:{link}; text-decoration:none;">{title}</a>'.format(
-                url=html.escape(ref.get("url", ""), quote=True), link=link,
-                title=html.escape(ref.get("title") or ref.get("url", "")))
+            url = ref.get("url", "")
+            html_text = '<a href="{url}" style="color:{link}; text-decoration:none;">{title}</a>'.format(
+                url=html.escape(url, quote=True), link=link,
+                title=html.escape(ref.get("title") or url))
             meta = reference_meta(ref)
             if meta:
-                text += '<br><span style="color:{}">{}</span>'.format(muted, html.escape(meta))
-            label = QtWidgets.QLabel(text)
+                html_text += '<br><span style="color:{}">{}</span>'.format(muted, html.escape(meta))
+            label = QtWidgets.QLabel(html_text)
             label.setWordWrap(True)
             label.setTextFormat(QtCore.Qt.RichText)
             label.setOpenExternalLinks(True)
-            label.setToolTip(ref.get("url", ""))
+            label.setToolTip(url)
+            label.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            label.customContextMenuRequested.connect(
+                lambda pos, lbl=label, u=url: self._reference_menu(lbl, pos, u))
             pal = label.palette()
             pal.setColor(QtGui.QPalette.Link, QtGui.QColor(link))
             label.setPalette(pal)
-            row.addWidget(label, 1)
-            btn = QtWidgets.QToolButton()
-            btn.setAutoRaise(True)
-            btn.setIcon(icon)
-            btn.setToolTip("Copy URL")
-            btn.clicked.connect(lambda _=False, u=ref.get("url", ""): self._copy(u, "Copied  " + u))
-            row.addWidget(btn, 0, QtCore.Qt.AlignTop)
-            body_lay.addLayout(row)
+            body_lay.addWidget(label)
 
+        # The body sits directly in the popup; a scroll area is only added in
+        # popup_at() when the popup can't fit on the screen.
+        lay.addWidget(body)
+        self._body = body
+        self._scroll = None
+
+    def _fit_height(self):
+        """Exact height of the popup at WIDTH (word-wrapped labels included)."""
+        lay = self.layout()
+        lay.activate()
+        h = lay.totalHeightForWidth(self.WIDTH)
+        return h if h > 0 else self.sizeHint().height()
+
+    def _enable_scrolling(self, max_height):
+        """Move the body into a scroll area so the popup is max_height tall."""
+        lay = self.layout()
+        lay.removeWidget(self._body)
         scroll = QtWidgets.QScrollArea()
+        scroll.setObjectName("ReferencesPopupScroll")
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setLineWidth(0)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         scroll.setWidgetResizable(True)
-        scroll.setWidget(body)
-        lay.addWidget(scroll)
-
-        # size: fixed width, height of the content capped at MAX_BODY_HEIGHT
-        inner = self.WIDTH - lay.contentsMargins().left() - lay.contentsMargins().right()
-        height = self._height_for(body, inner)
-        if height > self.MAX_BODY_HEIGHT:
-            sb = self.style().pixelMetric(QtWidgets.QStyle.PM_ScrollBarExtent)
-            height = self.MAX_BODY_HEIGHT
-            body.setMinimumWidth(inner - sb)
-        scroll.setFixedHeight(height)
-        self.setFixedWidth(self.WIDTH)
-        self.adjustSize()
-
-    @staticmethod
-    def _height_for(widget, width):
-        widget.layout().activate()
-        h = widget.layout().totalHeightForWidth(width)
-        return h if h > 0 else widget.sizeHint().height()
+        scroll.setWidget(self._body)
+        lay.addWidget(scroll, 1)
+        self._scroll = scroll
+        self.setFixedSize(self.WIDTH, max_height)
 
     def _copy(self, text, message):
         QtWidgets.QApplication.clipboard().setText(text)
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), message, self)
 
+    def _reference_menu(self, label, pos, url):
+        menu = QtWidgets.QMenu(self)
+        act_open = menu.addAction("Open link")
+        act_copy = menu.addAction("Copy URL")
+        chosen = menu.exec_(label.mapToGlobal(pos))
+        if chosen is act_open:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+        elif chosen is act_copy:
+            self._copy(url, "Copied  " + url)
+
     def popup_at(self, global_pos):
-        """Show with the top-left corner at the cursor, kept fully on screen."""
-        self.adjustSize()
-        size = self.size()
+        """Show with the top-left corner at the cursor, kept fully on screen.
+        Only if the popup is taller than the screen does its body scroll."""
         screen = None
         if hasattr(QtGui.QGuiApplication, "screenAt"):
             screen = QtGui.QGuiApplication.screenAt(global_pos)
         screen = screen or QtGui.QGuiApplication.primaryScreen()
         geo = screen.availableGeometry()
+
+        room = geo.height() - 16
+        height = self._fit_height()
+        if self._scroll is None and height > room:
+            self._enable_scrolling(room)
+        elif self._scroll is None:
+            self.setFixedSize(self.WIDTH, height)
+
+        size = self.size()
         x, y = global_pos.x() + 2, global_pos.y() + 2
-        if x + size.width() > geo.right():
-            x = geo.right() - size.width()
         if y + size.height() > geo.bottom():
             y = global_pos.y() - size.height() - 2  # flip above the cursor
         x = min(max(geo.left(), x), geo.right() - size.width() + 1)

@@ -38,8 +38,10 @@ aren't colours. The name swatches are always drawn from sRGB Linear.
 Double-click a row (the cursor shows a question mark over the Name column), or
 right-click and choose **References…**, to open a popup with the material's
 description and references. It closes when you click outside it or press Esc.
-Click a title to open it in your browser, use the copy icon to copy its URL, or
-**Copy citations** to copy all references as full citations, one per line.
+Click a title to open it in your browser, or right-click it to open it or copy
+its URL. The copy icon next to the material name copies all references as full
+citations, one per line. The popup grows to fit its content and only scrolls
+when it can't fit on the screen.
 
 ## Window
 
