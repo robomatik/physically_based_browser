@@ -1271,7 +1271,7 @@
           "color": [0.027, 0.026, 0.026]
         }
       ],
-      "metalness": 1,
+      "metalness": 0,
       "roughness": 0.3,
       "ior": 1.5,
       "density": [6800, 7800],

@@ -12,6 +12,12 @@ Derived here:        Specular    = F0 / 0.08, with F0 = ((n-1)/(n+1))^2
                      Reflectance = F0 from ior for dielectrics,
                                    stored base color for metals
 
+Color space (sRGB Linear / ACEScg) applies to Color, Complex IOR, both
+Specular Colors and metal Reflectance. Stored values are always preferred;
+ACEScg missing from the database (base colours of non-metals) is converted
+from sRGB Linear with the standard Bradford matrix and drawn in italics.
+Complex IOR is never converted - n and k are not colours.
+
 Usage (shelf tool / Python Shell):
     import physically_based_browser as pbb
     pbb.show()                       # looks for materials.json next to this file
@@ -72,7 +78,56 @@ MODE_TOOLTIPS = {
                       "(Computed from IOR for dielectrics; base color for metals)",
 }
 
-COLOR_SPACE = "srgb-linear"
+# Header tooltips (text as on physicallybased.info)
+IOR_COLUMN_TOOLTIP = "\n\n".join([
+    'Complex IOR specifies the color of a metal with an IOR value of "n", '
+    'and an extinction coefficient of "k".',
+    "IOR is the index of refraction, which controls both the reflection, "
+    "as well as the refraction, of a dielectric material.",
+    "Specular corresponds to an index of refraction value between 1.0-1.8, "
+    "remapped to a 0-1 range, where 0.5 is equivalent to an IOR of 1.5.",
+    "Specular Color specifies the color of a metallic material when viewed at a 90° angle.",
+    "Specular Color (F82) specifies the color of a metallic material "
+    "when viewed at an 82° angle.",
+    "Reflectance (F0) specifies the reflectance of a material when viewed at a 0° angle.",
+])
+
+COLOR_COLUMN_TOOLTIP = "\n\n".join([
+    "For dielectrics (non-metals), this specifies diffuse reflectance for opaque materials, "
+    "or transmission color for transparent materials.",
+    "For conductors (metals), this specifies reflection color.",
+])
+
+# Color spaces
+SPACE_SRGB_LINEAR = "srgb-linear"
+SPACE_ACESCG = "acescg"
+COLOR_SPACES = [  # (combobox label, colorSpace key in materials.json)
+    ("sRGB Linear", SPACE_SRGB_LINEAR),
+    ("ACEScg", SPACE_ACESCG),
+]
+COLOR_SPACE_LABELS = dict((key, label) for label, key in COLOR_SPACES)
+
+COLOR_SPACE_TOOLTIP = (
+    "Color space for the Color, Complex IOR, Specular Color, Specular Color (F82) "
+    "and metal Reflectance values. IOR, Specular, dielectric Reflectance and "
+    "Density don't change.\n\n"
+    "Values in italics are converted from sRGB Linear, because the database "
+    "doesn't store them in this color space. All other values are stored in the database."
+)
+
+# Linear sRGB (D65) -> ACEScg (AP1, D60), Bradford chromatic adaptation.
+# The standard OCIO/ACES matrix; matches Color.js / ColorAide to ~5e-7.
+SRGB_LINEAR_TO_ACESCG = (
+    (0.6130974, 0.3395231, 0.0473795),
+    (0.0701937, 0.9163539, 0.0134524),
+    (0.0206156, 0.1095698, 0.8698151),
+)
+
+# Luminance (Y) weights per space, used for sorting RGB columns
+LUMINANCE_WEIGHTS = {
+    SPACE_SRGB_LINEAR: (0.2126, 0.7152, 0.0722),
+    SPACE_ACESCG: (0.2722287, 0.6740818, 0.0536895),
+}
 
 # Value kinds returned by mode_value()
 KIND_NONE = "none"
@@ -92,38 +147,63 @@ def load_materials(path):
     return [m for m in data if isinstance(m, dict) and m.get("name")]
 
 
-def _pick_space(entries, space=COLOR_SPACE):
-    """From a list of {'colorSpace': ...} entries return the one in `space`
-    (falling back to the first entry), or None."""
-    if not entries:
-        return None
-    for entry in entries:
+def _pick_space(entries, space=SPACE_SRGB_LINEAR):
+    """From a list of {'colorSpace': ...} entries return the one in `space`,
+    or None. Deliberately no fallback: values from another space must never be
+    shown under this space's label."""
+    for entry in entries or []:
         if entry.get("colorSpace") == space:
             return entry
-    return entries[0]
-
-
-def base_color(material):
-    entry = _pick_space(material.get("color"))
-    if entry and entry.get("color"):
-        return tuple(float(c) for c in entry["color"][:3])
     return None
 
 
+def srgb_linear_to_acescg(rgb, digits=3):
+    """Matrix-convert a linear sRGB triplet to ACEScg, rounded to the
+    database's precision (3 decimals) so displayed and copied values agree."""
+    return tuple(round(sum(row[c] * rgb[c] for c in range(3)), digits)
+                 for row in SRGB_LINEAR_TO_ACESCG)
+
+
+def _rgb_in_space(entries, space):
+    """(rgb, converted) for a list of colour entries in `space`.
+
+    Stored values are used as they are. If ACEScg isn't stored, it's converted
+    from the stored sRGB Linear triplet (converted=True). (None, False) if
+    neither is possible."""
+    entry = _pick_space(entries, space)
+    if entry and entry.get("color"):
+        return tuple(float(c) for c in entry["color"][:3]), False
+    if space == SPACE_ACESCG:
+        src = _pick_space(entries, SPACE_SRGB_LINEAR)
+        if src and src.get("color"):
+            return srgb_linear_to_acescg([float(c) for c in src["color"][:3]]), True
+    return None, False
+
+
+def base_color_in_space(material, space=SPACE_SRGB_LINEAR):
+    """(rgb, converted) for the material's base colour in `space`."""
+    return _rgb_in_space(material.get("color"), space)
+
+
+def base_color(material):
+    """Base colour in sRGB Linear (used for the on-screen swatches)."""
+    return base_color_in_space(material, SPACE_SRGB_LINEAR)[0]
+
+
 def is_metal(material):
+    """True for materials the IOR modes treat as conductors (metalness >= 0.5)."""
     try:
         return float(material.get("metalness", 0)) >= 0.5
     except (TypeError, ValueError):
         return False
 
 
-def _specular_color(material, fmt):
+def _specular_color(material, fmt, space=SPACE_SRGB_LINEAR):
+    """(rgb, converted) for the Gulbrandsen or F82 specular colour."""
     for item in material.get("specularColor") or []:
         if fmt in (item.get("format") or []):
-            entry = _pick_space(item.get("color"))
-            if entry and entry.get("color"):
-                return tuple(float(c) for c in entry["color"][:3])
-    return None
+            return _rgb_in_space(item.get("color"), space)
+    return None, False
 
 
 def f0_from_ior(ior):
@@ -136,51 +216,51 @@ def specular_from_ior(ior):
     return f0_from_ior(ior) / 0.08
 
 
-def mode_value(material, mode):
-    """Return (kind, value) for `material` under `mode`.
+def mode_value(material, mode, space=SPACE_SRGB_LINEAR):
+    """Return (kind, value, converted) for `material` under `mode` in `space`.
 
-    scalar  -> float
+    scalar  -> float                       (colour-space independent)
     rgb     -> (r, g, b)   linear, may exceed 1.0
     complex -> {'n': (r, g, b), 'k': (r, g, b)}
     none    -> None        (mode does not apply to this material)
+
+    converted is True when the value was matrix-converted from sRGB Linear
+    rather than stored in `space`. Complex IOR is never converted: n and k
+    are not colours, so a missing space shows as 'none'.
     """
     ior = material.get("ior")
 
     if mode == MODE_IOR:
         if ior is not None:
-            return KIND_SCALAR, float(ior)
+            return KIND_SCALAR, float(ior), False
 
     elif mode == MODE_COMPLEX_IOR:
-        entry = _pick_space(material.get("complexIor"))
+        entry = _pick_space(material.get("complexIor"), space)
         if entry and entry.get("n") and entry.get("k"):
             return KIND_COMPLEX, {
                 "n": tuple(float(v) for v in entry["n"][:3]),
                 "k": tuple(float(v) for v in entry["k"][:3]),
-            }
+            }, False
 
     elif mode == MODE_SPECULAR:
         if ior is not None and not is_metal(material):
-            return KIND_SCALAR, specular_from_ior(float(ior))
+            return KIND_SCALAR, specular_from_ior(float(ior)), False
 
-    elif mode == MODE_SPECULAR_COLOR:
-        rgb = _specular_color(material, "Gulbrandsen")
+    elif mode in (MODE_SPECULAR_COLOR, MODE_SPECULAR_F82):
+        fmt = "Gulbrandsen" if mode == MODE_SPECULAR_COLOR else "F82"
+        rgb, converted = _specular_color(material, fmt, space)
         if rgb:
-            return KIND_RGB, rgb
-
-    elif mode == MODE_SPECULAR_F82:
-        rgb = _specular_color(material, "F82")
-        if rgb:
-            return KIND_RGB, rgb
+            return KIND_RGB, rgb, converted
 
     elif mode == MODE_REFLECTANCE:
         if is_metal(material):
-            rgb = base_color(material)
+            rgb, converted = base_color_in_space(material, space)
             if rgb:
-                return KIND_RGB, rgb
+                return KIND_RGB, rgb, converted
         elif ior is not None:
-            return KIND_SCALAR, f0_from_ior(float(ior))
+            return KIND_SCALAR, f0_from_ior(float(ior)), False
 
-    return KIND_NONE, None
+    return KIND_NONE, None, False
 
 
 def format_number(value, digits=3):
@@ -203,9 +283,13 @@ def raw_number(value):
     return "0" if text in ("", "-0") else text
 
 
-def rgb_copy_text(rgb):
-    """Clipboard form: comma separated, no spaces, full stored precision,
-    e.g. '0.728978,0.588215,0.78354'."""
+def rgb_copy_text(rgb, converted=False):
+    """Clipboard form: comma separated, no spaces.
+
+    Stored values copy at full stored precision, e.g. '0.728978,0.588215,0.78354'.
+    Converted values copy at exactly three decimals, e.g. '0.608,0.323,0.080'."""
+    if converted:
+        return ",".join("{:.3f}".format(float(c)) for c in rgb)
     return ",".join(raw_number(c) for c in rgb)
 
 
@@ -219,24 +303,24 @@ def format_mode_value(kind, value):
     return "—"
 
 
-def mode_segments(kind, value):
+def mode_segments(kind, value, converted=False):
     """[(display_text, copy_text), ...] for cells that get copy icons, else None."""
     if kind == KIND_RGB:
-        return [(format_rgb(value), rgb_copy_text(value))]
+        return [(format_rgb(value), rgb_copy_text(value, converted))]
     if kind == KIND_COMPLEX:
         return [("n: " + format_rgb(value["n"]), rgb_copy_text(value["n"])),
                 ("k: " + format_rgb(value["k"]), rgb_copy_text(value["k"]))]
     return None
 
 
-def mode_sort_key(kind, value):
+def mode_sort_key(kind, value, space=SPACE_SRGB_LINEAR):
     """Numeric key for sorting; None sorts after everything."""
     if kind == KIND_SCALAR:
         return value
     if kind == KIND_RGB:
-        return luminance(value)
+        return luminance(value, space)
     if kind == KIND_COMPLEX:  # sort by resulting F0 brightness
-        return luminance(tuple(f0_complex(n, k) for n, k in zip(value["n"], value["k"])))
+        return luminance(tuple(f0_complex(n, k) for n, k in zip(value["n"], value["k"])), space)
     return None
 
 
@@ -244,9 +328,10 @@ def f0_complex(n, k):
     return ((n - 1.0) ** 2 + k * k) / ((n + 1.0) ** 2 + k * k)
 
 
-def luminance(rgb):
+def luminance(rgb, space=SPACE_SRGB_LINEAR):
+    wr, wg, wb = LUMINANCE_WEIGHTS.get(space, LUMINANCE_WEIGHTS[SPACE_SRGB_LINEAR])
     r, g, b = rgb
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return wr * r + wg * g + wb * b
 
 
 def linear_to_srgb8(c):
@@ -299,7 +384,10 @@ COL_NAME, COL_COLOR, COL_MODE, COL_DENSITY = range(4)
 ROLE_SORT = QtCore.Qt.UserRole + 1
 ROLE_SEGMENTS = QtCore.Qt.UserRole + 2  # [(display_text, copy_text), ...] for copy icons
 ROLE_MATERIAL = QtCore.Qt.UserRole + 3  # the raw material dict
-ROLE_RAW = QtCore.Qt.UserRole + 4       # (kind, value) for the mode column
+ROLE_RAW = QtCore.Qt.UserRole + 4       # (kind, value, converted) for the mode column
+ROLE_CONVERTED = QtCore.Qt.UserRole + 5  # True if the cell's values were converted (drawn italic)
+
+CONVERTED_CELL_TOOLTIP = "Converted from sRGB Linear (not stored in ACEScg in the database)"
 
 
 # Icon for the 'Load materials' button: 32x32 PNG, embedded so the module
@@ -352,7 +440,9 @@ class MaterialModel(QtCore.QAbstractTableModel):
         super(MaterialModel, self).__init__(parent)
         self._materials = list(materials or [])
         self._mode = MODE_COMPLEX_IOR
-        self._cache = {}
+        self._space = SPACE_SRGB_LINEAR
+        self._cache = {}        # row -> (kind, value, converted) for mode/space
+        self._color_cache = {}  # row -> (rgb, converted) for space
         self._swatches = {}  # rgb tuple -> QIcon
 
     # -- API ---------------------------------------------------------------
@@ -360,6 +450,7 @@ class MaterialModel(QtCore.QAbstractTableModel):
         self.beginResetModel()
         self._materials = list(materials)
         self._cache = {}
+        self._color_cache = {}
         self.endResetModel()
 
     def material(self, row):
@@ -379,10 +470,30 @@ class MaterialModel(QtCore.QAbstractTableModel):
             self.dataChanged.emit(top, bottom)
         self.headerDataChanged.emit(QtCore.Qt.Horizontal, COL_MODE, COL_MODE)
 
+    def color_space(self):
+        return self._space
+
+    def set_color_space(self, space):
+        if space == self._space:
+            return
+        self._space = space
+        self._cache = {}
+        self._color_cache = {}
+        if self._materials:
+            top = self.index(0, COL_COLOR)
+            bottom = self.index(len(self._materials) - 1, COL_MODE)
+            self.dataChanged.emit(top, bottom)
+        self.headerDataChanged.emit(QtCore.Qt.Horizontal, COL_COLOR, COL_MODE)
+
     def _value(self, row):
         if row not in self._cache:
-            self._cache[row] = mode_value(self._materials[row], self._mode)
+            self._cache[row] = mode_value(self._materials[row], self._mode, self._space)
         return self._cache[row]
+
+    def _color(self, row):
+        if row not in self._color_cache:
+            self._color_cache[row] = base_color_in_space(self._materials[row], self._space)
+        return self._color_cache[row]
 
     # -- Qt overrides ------------------------------------------------------
     def rowCount(self, parent=QtCore.QModelIndex()):
@@ -395,9 +506,20 @@ class MaterialModel(QtCore.QAbstractTableModel):
         if orientation != QtCore.Qt.Horizontal:
             return None
         if role == QtCore.Qt.DisplayRole:
-            return ("Name", "Color", self._mode, "Density (kg/m³)")[section]
-        if role == QtCore.Qt.ToolTipRole and section == COL_MODE:
-            return MODE_TOOLTIPS.get(self._mode)
+            space = COLOR_SPACE_LABELS[self._space]
+            if section == COL_COLOR:
+                return "Color ({})".format(space)
+            if section == COL_MODE:
+                # only colour-carrying modes depend on the space
+                if self._mode in (MODE_IOR, MODE_SPECULAR):
+                    return self._mode
+                return "{} ({})".format(self._mode, space)
+            return ("Name", None, None, "Density (kg/m³)")[section]
+        if role == QtCore.Qt.ToolTipRole:
+            if section == COL_MODE:
+                return IOR_COLUMN_TOOLTIP
+            if section == COL_COLOR:
+                return COLOR_COLUMN_TOOLTIP
         return None
 
     def data(self, index, role=QtCore.Qt.DisplayRole):
@@ -425,28 +547,34 @@ class MaterialModel(QtCore.QAbstractTableModel):
                 return mat.get("description") or None
 
         elif col == COL_COLOR:
-            rgb = base_color(mat)
+            rgb, converted = self._color(row)
             if role == ROLE_SEGMENTS:
-                return [(format_rgb(rgb), rgb_copy_text(rgb))] if rgb else None
+                return [(format_rgb(rgb), rgb_copy_text(rgb, converted))] if rgb else None
+            if role == ROLE_CONVERTED:
+                return converted
             if role == QtCore.Qt.DisplayRole:
                 return format_rgb(rgb) if rgb else "—"
             if role == ROLE_SORT:
-                return luminance(rgb) if rgb else None
+                return luminance(rgb, self._space) if rgb else None
             if role == QtCore.Qt.ToolTipRole and rgb:
-                return "Linear sRGB"
+                return CONVERTED_CELL_TOOLTIP if converted else COLOR_SPACE_LABELS[self._space]
             if role == QtCore.Qt.TextAlignmentRole:
                 return int(QtCore.Qt.AlignCenter)
 
         elif col == COL_MODE:
-            kind, value = self._value(row)
+            kind, value, converted = self._value(row)
             if role == ROLE_RAW:
-                return kind, value
+                return kind, value, converted
             if role == ROLE_SEGMENTS:
-                return mode_segments(kind, value)
+                return mode_segments(kind, value, converted)
+            if role == ROLE_CONVERTED:
+                return converted
             if role == QtCore.Qt.DisplayRole:
                 return format_mode_value(kind, value)
             if role == ROLE_SORT:
-                return mode_sort_key(kind, value)
+                return mode_sort_key(kind, value, self._space)
+            if role == QtCore.Qt.ToolTipRole and converted:
+                return CONVERTED_CELL_TOOLTIP
             if role == QtCore.Qt.TextAlignmentRole:
                 return int(QtCore.Qt.AlignCenter)
 
@@ -525,11 +653,20 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
         view.viewport().installEventFilter(self)
 
     # -- geometry ----------------------------------------------------------
-    def _layout(self, rect, fm, index):
+    @staticmethod
+    def cell_font(base_font, index):
+        """The view font, italic when the cell's values were converted."""
+        font = QtGui.QFont(base_font)
+        if index.data(ROLE_CONVERTED):
+            font.setItalic(True)
+        return font
+
+    def _layout(self, rect, base_font, index):
         """[(label, copy_text, text_rect, icon_rect), ...] for the cell."""
         segments = index.data(ROLE_SEGMENTS)
         if not segments:
             return []
+        fm = QtGui.QFontMetrics(self.cell_font(base_font, index))
         line_h = self._line_height(fm)
         top = rect.center().y() - (line_h * len(segments)) // 2 + 1
         # measure with every digit as '0' so narrow digits (e.g. '1') don't shift
@@ -537,6 +674,8 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
         text_w = max(max(fm.horizontalAdvance(label),
                          fm.horizontalAdvance("".join("0" if ch.isdigit() else ch for ch in label)))
                      for label, _ in segments)
+        if index.data(ROLE_CONVERTED):
+            text_w += 2  # italic glyphs lean past their advance width
         block_w = text_w + self.GAP + self.ICON
         # centre the text+icon block in the cell; lines stay left-aligned within it
         x = rect.left() + max(self.PAD, (rect.width() - block_w) // 2)
@@ -557,15 +696,15 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
         """Height of a cell holding `lines` lines (same formula as sizeHint)."""
         return self._line_height(fm) * lines + 2 * self.V_MARGIN
 
-    def _hit(self, rect, fm, index, pos):
-        for i, (_, copy_text, _, icon_rect) in enumerate(self._layout(rect, fm, index)):
+    def _hit(self, rect, base_font, index, pos):
+        for i, (_, copy_text, _, icon_rect) in enumerate(self._layout(rect, base_font, index)):
             if icon_rect.adjusted(-3, -3, 3, 3).contains(pos):
                 return i, copy_text
         return None, None
 
     # -- painting ----------------------------------------------------------
     def paint(self, painter, option, index):
-        layout = self._layout(option.rect, option.fontMetrics, index)
+        layout = self._layout(option.rect, option.font, index)
         if not layout:
             super(CopyValuesDelegate, self).paint(painter, option, index)
             return
@@ -581,6 +720,7 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
 
         painter.save()
         painter.setClipRect(opt.rect)
+        painter.setFont(self.cell_font(option.font, index))
         for i, (label, _, text_rect, icon_rect) in enumerate(layout):
             painter.setPen(fg)
             painter.drawText(text_rect, int(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft), label)
@@ -622,7 +762,7 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         hint = super(CopyValuesDelegate, self).sizeHint(option, index)
-        layout = self._layout(option.rect, option.fontMetrics, index)
+        layout = self._layout(option.rect, option.font, index)
         if layout:
             text_w = layout[0][2].width()
             hint.setWidth(text_w + self.GAP + self.ICON + 2 * self.PAD + 2)
@@ -645,7 +785,7 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
             index = self._view.indexAt(pos)
             hover = None
             if index.isValid() and self._view.itemDelegateForColumn(index.column()) is self:
-                seg, _ = self._hit(self._view.visualRect(index), self._view.fontMetrics(), index, pos)
+                seg, _ = self._hit(self._view.visualRect(index), self._view.font(), index, pos)
                 if seg is not None:
                     hover = (index.row(), index.column(), seg)
             self._set_hover(hover)
@@ -657,7 +797,7 @@ class CopyValuesDelegate(QtWidgets.QStyledItemDelegate):
         etype = event.type()
         if etype in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease,
                      QtCore.QEvent.MouseButtonDblClick):
-            seg, copy_text = self._hit(option.rect, option.fontMetrics, index, event.pos())
+            seg, copy_text = self._hit(option.rect, option.font, index, event.pos())
             if seg is not None:
                 if etype == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
                     QtWidgets.QApplication.clipboard().setText(copy_text)
@@ -696,6 +836,11 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
             self._mode.setItemData(i, MODE_TOOLTIPS[m], QtCore.Qt.ToolTipRole)
         self._mode.setCurrentText(MODE_COMPLEX_IOR)
         self._mode.setToolTip("Value shown in the third column")
+
+        self._space = QtWidgets.QComboBox()
+        for label, key in COLOR_SPACES:
+            self._space.addItem(label, key)
+        self._space.setToolTip(COLOR_SPACE_TOOLTIP)
 
         self._open_btn = QtWidgets.QToolButton()
         self._open_btn.setIcon(load_materials_icon())
@@ -748,6 +893,8 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         top.addWidget(self._category)
         top.addWidget(QtWidgets.QLabel("IOR mode:"))
         top.addWidget(self._mode)
+        top.addWidget(QtWidgets.QLabel("Color space:"))
+        top.addWidget(self._space)
         top.addWidget(self._open_btn)
 
         lay = QtWidgets.QVBoxLayout(self)
@@ -760,6 +907,7 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._search.textChanged.connect(self._on_filter_changed)
         self._category.currentIndexChanged.connect(self._on_filter_changed)
         self._mode.currentTextChanged.connect(self._on_mode_changed)
+        self._space.currentIndexChanged.connect(self._on_space_changed)
         self._open_btn.clicked.connect(self._browse_json)
         self._view.customContextMenuRequested.connect(self._context_menu)
 
@@ -812,6 +960,11 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._proxy.invalidate()  # re-sort on the new values
         self._update_status()
 
+    def _on_space_changed(self, *_):
+        self._model.set_color_space(self._space.currentData())
+        self._proxy.invalidate()  # luminance sort keys change with the space
+        self._update_status()
+
     def _update_status(self):
         total = self._model.rowCount()
         shown = self._proxy.rowCount()
@@ -821,8 +974,8 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
             if self._proxy.index(r, COL_MODE).data(ROLE_RAW)[0] != KIND_NONE
         )
         src = os.path.basename(self._json_path) if self._json_path else "no file loaded"
-        self._status.setText("{} of {} materials  ·  {} with {}  ·  {}".format(
-            shown, total, with_value, mode, src))
+        self._status.setText("{} of {} materials  ·  {} with {}  ·  {}  ·  {}".format(
+            shown, total, with_value, mode, COLOR_SPACE_LABELS[self._model.color_space()], src))
 
     # -- copy --------------------------------------------------------------
     def _selected_rows(self):

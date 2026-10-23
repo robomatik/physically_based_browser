@@ -15,8 +15,23 @@ The IOR column switches between six modes (Complex IOR is the default):
 | Specular Color (F82) | stored `specularColor`, F82 entry |
 | Reflectance | computed F0 for dielectrics; stored base colour for metals |
 
-RGB triplets are shown in linear sRGB to three decimals. The copy icon next to
-each triplet copies it as `r,g,b` at full stored precision.
+RGB triplets are shown to three decimals. The copy icon next to each triplet
+copies it as `r,g,b`: stored values at full stored precision, converted values
+at exactly three decimals.
+
+## Color space
+
+The **Color space** box switches between sRGB Linear and ACEScg. It affects
+the Color column and the Complex IOR, Specular Color, Specular Color (F82) and
+metal Reflectance values. IOR, Specular, dielectric Reflectance and Density
+don't change.
+
+Values stored in the database are always used as they are. The database
+stores ACEScg for metals only, so the base colours of non-metals are converted
+from sRGB Linear with the standard Bradford-adapted matrix (the same result as
+Color.js, which physicallybased.info credits for its converter). Converted
+values are shown in *italics*. Complex IOR is never converted, because n and k
+aren't colours. The name swatches are always drawn from sRGB Linear.
 
 ## Install
 
@@ -40,3 +55,8 @@ Palmqvist, A. (2026) Physically Based - The PBR Values Database Available at: ht
 `materials.json` is the Physically Based database (schema 2.2), released under
 CC0 1.0 Universal. A newer copy can be downloaded from
 <https://api.physicallybased.info/v2/materials>.
+
+**Local change:** Cast Iron's `metalness` is set to `0` (upstream: `1`). Its
+entry has an IOR of 1.5, no complex IOR and a measured base colour of 0.027,
+which fits a non-metallic (oxidised) surface rather than bare metal. Downloading
+a newer database file undoes this edit, so reapply it after updating.
