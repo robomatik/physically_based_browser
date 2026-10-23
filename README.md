@@ -4,6 +4,8 @@ A PySide2 window for Houdini 19.5 that shows the
 [physicallybased.info](https://physicallybased.info) material database as a
 sortable, searchable table: **Name | Color | IOR | Density**.
 
+<img width="981" height="750" alt="physically_based_browser_ui" src="https://github.com/user-attachments/assets/bc8adbc5-556b-4dd2-b86d-69c9bc9b4e88" />
+
 The IOR column switches between six modes (Complex IOR is the default):
 
 | Mode | Source |
