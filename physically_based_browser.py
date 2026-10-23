@@ -62,26 +62,6 @@ MODES = [
     MODE_REFLECTANCE,
 ]
 
-MODE_TOOLTIPS = {
-    MODE_COMPLEX_IOR: 'Complex IOR specifies the color of a metal with an IOR value of "n", '
-                      'and an extinction coefficient of "k".',
-    MODE_IOR: "IOR is the index of refraction, which controls both the reflection, "
-              "as well as the refraction, of a dielectric material.",
-    MODE_SPECULAR: "Specular corresponds to an index of refraction value between 1.0-1.8, "
-                   "remapped to a 0-1 range, where 0.5 is equivalent to an IOR of 1.5.\n"
-                   "(Computed: F0 / 0.08)",
-    MODE_SPECULAR_COLOR: "Specular Color specifies the color of a metallic material "
-                         "when viewed at a 90° angle.",
-    MODE_SPECULAR_F82: "Specular Color (F82) specifies the color of a metallic material "
-                       "when viewed at an 82° angle.",
-    MODE_REFLECTANCE: "Reflectance (F0) specifies the reflectance of a material "
-                      "when viewed at a 0° angle.\n"
-                      "(Computed from IOR for dielectrics; for metals, the luminance of "
-                      "the sRGB Linear base color, as on physicallybased.info)\n\n"
-                      "The per-channel F0 are shown below the scalar reflectance in case "
-                      "users want to tint specular.",
-}
-
 # Header tooltips (text as on physicallybased.info)
 IOR_COLUMN_TOOLTIP = "\n\n".join([
     'Complex IOR specifies the color of a metal with an IOR value of "n", '
@@ -93,7 +73,9 @@ IOR_COLUMN_TOOLTIP = "\n\n".join([
     "Specular Color specifies the color of a metallic material when viewed at a 90° angle.",
     "Specular Color (F82) specifies the color of a metallic material "
     "when viewed at an 82° angle.",
-    "Reflectance (F0) specifies the reflectance of a material when viewed at a 0° angle.",
+    "Reflectance (F0) specifies the reflectance of a material when viewed at a 0° angle. "
+    "The per-channel F0 are shown below the scalar reflectance in case users want to "
+    "tint specular.",
 ])
 
 DENSITY_COLUMN_TOOLTIP = "This value can be used for rigid body physics simulation."
@@ -877,9 +859,7 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         self._category.setToolTip("Filter by category")
 
         self._mode = QtWidgets.QComboBox()
-        self._mode.addItems(MODES)
-        for i, m in enumerate(MODES):
-            self._mode.setItemData(i, MODE_TOOLTIPS[m], QtCore.Qt.ToolTipRole)
+        self._mode.addItems(MODES)  # mode descriptions live in the column header tooltip
         self._mode.setCurrentText(MODE_COMPLEX_IOR)
         self._mode.setToolTip("Value shown in the third column")
 
