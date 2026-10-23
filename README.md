@@ -1,6 +1,6 @@
 # Physically Based material browser for Houdini
 
-A PySide2 window for Houdini 19.5 that shows the
+A PySide2 UI that shows the
 [physicallybased.info](https://physicallybased.info) material database as a
 sortable, searchable table: **Name | Color | IOR | Density**.
 
@@ -52,7 +52,7 @@ Density are sized to the widest values they can show in any IOR mode and color
 space, so they don't move when you switch.
 
 ## Install
-
+### Houdini example
 Copy `physically_based_browser.py` and `materials.json` into
 `houdini19.5/scripts/python`, then create a shelf tool:
 
