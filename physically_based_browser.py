@@ -100,6 +100,7 @@ COLOR_SPACES = [  # (combobox label, colorSpace key in materials.json)
     ("ACEScg", SPACE_ACESCG),
 ]
 COLOR_SPACE_LABELS = dict((key, label) for label, key in COLOR_SPACES)
+DEFAULT_COLOR_SPACE = SPACE_ACESCG  # VFX pipelines work in ACEScg
 
 COLOR_SPACE_TOOLTIP = (
     "Color space for the Color, Complex IOR, Specular Color, Specular Color (F82) "
@@ -462,7 +463,7 @@ class MaterialModel(QtCore.QAbstractTableModel):
         super(MaterialModel, self).__init__(parent)
         self._materials = list(materials or [])
         self._mode = MODE_COMPLEX_IOR
-        self._space = SPACE_SRGB_LINEAR
+        self._space = DEFAULT_COLOR_SPACE
         self._cache = {}        # row -> (kind, value, converted) for mode/space
         self._color_cache = {}  # row -> (rgb, converted) for space
         self._swatches = {}  # rgb tuple -> QIcon
@@ -870,6 +871,7 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         for label, key in COLOR_SPACES:
             self._space.addItem(label, key)
         self._space.setToolTip(COLOR_SPACE_TOOLTIP)
+        self._space.setCurrentIndex(self._space.findData(DEFAULT_COLOR_SPACE))
 
         self._open_btn = QtWidgets.QToolButton()
         self._open_btn.setIcon(load_materials_icon())

@@ -13,18 +13,18 @@ The IOR column switches between six modes (Complex IOR is the default):
 | Specular | computed: F0 / 0.08, with F0 = ((n−1)/(n+1))², dielectrics only |
 | Specular Color | stored `specularColor`, Gulbrandsen entry |
 | Specular Color (F82) | stored `specularColor`, F82 entry |
-| Reflectance | computed F0 for dielectrics; stored base colour for metals |
+| Reflectance | computed F0 for dielectrics; for metals, the luminance of the sRGB Linear base colour (as on physicallybased.info), with the per-channel F0 below it |
 
-RGB triplets are shown to three decimals. The copy icon next to each triplet
+All values are shown to three decimals. The copy icon next to each triplet
 copies it as `r,g,b`: stored values at full stored precision, converted values
 at exactly three decimals.
 
 ## Color space
 
-The **Color space** box switches between sRGB Linear and ACEScg. It affects
+The **Color space** box switches between ACEScg (the default) and sRGB Linear. It affects
 the Color column and the Complex IOR, Specular Color, Specular Color (F82) and
-metal Reflectance values. IOR, Specular, dielectric Reflectance and Density
-don't change.
+per-channel Reflectance F0 values. IOR, Specular, the single Reflectance value
+and Density don't change.
 
 Values stored in the database are always used as they are. The database
 stores ACEScg for metals only, so the base colours of non-metals are converted
