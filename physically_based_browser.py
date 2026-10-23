@@ -1139,7 +1139,8 @@ class PhysicallyBasedBrowser(QtWidgets.QWidget):
         super(PhysicallyBasedBrowser, self).__init__(parent)
         self.setWindowFlags(QtCore.Qt.Window)
         self.setWindowTitle("Physically Based Materials")
-        self.setObjectName("PhysicallyBasedBrowser")
+        self.setObjectName(WINDOW_OBJECT_NAME)  # used by close_existing()
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.resize(920, 640)
 
         self._json_path = None
@@ -1403,24 +1404,39 @@ def _default_json_path():
     return candidate if os.path.isfile(candidate) else None
 
 
-def show(json_path=None):
-    """Open (or raise) the browser window."""
-    global _window
-    parent = hou.qt.mainWindow() if hou else None
+WINDOW_OBJECT_NAME = "PhysicallyBasedBrowser"
 
-    if _window is not None:
+
+def close_existing():
+    """Close every open browser window and return how many were closed.
+
+    Windows are found by object name rather than through _window, so this also
+    catches windows from earlier imports of this module: importlib.reload()
+    starts a fresh module whose _window is None, but the old window lives on.
+    """
+    closed = 0
+    for widget in QtWidgets.QApplication.allWidgets():
         try:
-            if json_path:
-                _window.load(json_path)
-            _window.show()
-            _window.raise_()
-            _window.activateWindow()
-            return _window
-        except RuntimeError:  # underlying C++ object was deleted
-            _window = None
+            if widget.objectName() == WINDOW_OBJECT_NAME and widget.isWindow():
+                widget.close()  # also closes its references popup, if open
+                widget.deleteLater()
+                closed += 1
+        except RuntimeError:  # C++ object already deleted
+            continue
+    return closed
 
+
+def show(json_path=None):
+    """Open the browser window. Only one may exist: any open browser window,
+    including one from an earlier (reloaded) version of this module, is closed
+    before the new one opens."""
+    global _window
+    close_existing()
+    parent = hou.qt.mainWindow() if hou else None
     _window = PhysicallyBasedBrowser(json_path or _default_json_path(), parent)
     _window.show()
+    _window.raise_()
+    _window.activateWindow()
     return _window
 
 
