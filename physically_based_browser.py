@@ -69,11 +69,14 @@ IOR_COLUMN_TOOLTIP = "\n\n".join([
     "IOR is the index of refraction, which controls both the reflection, "
     "as well as the refraction, of a dielectric material.",
     "Specular corresponds to an index of refraction value between 1.0-1.8, "
-    "remapped to a 0-1 range, where 0.5 is equivalent to an IOR of 1.5.",
+    "remapped to a 0-1 range, where 0.5 is equivalent to an IOR of 1.5.\n"
+    "(Computed: F0 / 0.08)",
     "Specular Color specifies the color of a metallic material when viewed at a 90° angle.",
     "Specular Color (F82) specifies the color of a metallic material "
     "when viewed at an 82° angle.",
-    "Reflectance (F0) specifies the reflectance of a material when viewed at a 0° angle. "
+    "Reflectance (F0) specifies the reflectance of a material when viewed at a 0° angle.\n"
+    "(Computed from IOR for dielectrics; for metals, the luminance of the sRGB Linear "
+    "base color, as on physicallybased.info)\n"
     "The per-channel F0 are shown below the scalar reflectance in case users want to "
     "tint specular.",
 ])
