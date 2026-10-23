@@ -92,6 +92,11 @@ IOR_COLUMN_TOOLTIP = "\n\n".join([
     "Reflectance (F0) specifies the reflectance of a material when viewed at a 0° angle.",
 ])
 
+DENSITY_COLUMN_TOOLTIP = "This value can be used for rigid body physics simulation."
+
+# CIRCLED LATIN SMALL LETTER I, appended to header labels that have a tooltip
+INFO_MARK = "ⓘ"
+
 COLOR_COLUMN_TOOLTIP = "\n\n".join([
     "For dielectrics (non-metals), this specifies diffuse reflectance for opaque materials, "
     "or transmission color for transparent materials.",
@@ -381,6 +386,12 @@ def density_sort_key(material):
 
 COL_NAME, COL_COLOR, COL_MODE, COL_DENSITY = range(4)
 
+HEADER_TOOLTIPS = {
+    COL_COLOR: COLOR_COLUMN_TOOLTIP,
+    COL_MODE: IOR_COLUMN_TOOLTIP,
+    COL_DENSITY: DENSITY_COLUMN_TOOLTIP,
+}
+
 ROLE_SORT = QtCore.Qt.UserRole + 1
 ROLE_SEGMENTS = QtCore.Qt.UserRole + 2  # [(display_text, copy_text), ...] for copy icons
 ROLE_MATERIAL = QtCore.Qt.UserRole + 3  # the raw material dict
@@ -508,18 +519,20 @@ class MaterialModel(QtCore.QAbstractTableModel):
         if role == QtCore.Qt.DisplayRole:
             space = COLOR_SPACE_LABELS[self._space]
             if section == COL_COLOR:
-                return "Color ({})".format(space)
-            if section == COL_MODE:
+                text = "Color ({})".format(space)
+            elif section == COL_MODE:
                 # only colour-carrying modes depend on the space
                 if self._mode in (MODE_IOR, MODE_SPECULAR):
-                    return self._mode
-                return "{} ({})".format(self._mode, space)
-            return ("Name", None, None, "Density (kg/m³)")[section]
+                    text = self._mode
+                else:
+                    text = "{} ({})".format(self._mode, space)
+            elif section == COL_DENSITY:
+                text = "Density (kg/m³)"
+            else:
+                return "Name"
+            return text + "  " + INFO_MARK  # marks headers that have a tooltip
         if role == QtCore.Qt.ToolTipRole:
-            if section == COL_MODE:
-                return IOR_COLUMN_TOOLTIP
-            if section == COL_COLOR:
-                return COLOR_COLUMN_TOOLTIP
+            return HEADER_TOOLTIPS.get(section)
         return None
 
     def data(self, index, role=QtCore.Qt.DisplayRole):
